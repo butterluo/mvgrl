@@ -47,11 +47,11 @@ class GCN(nn.Module):
 
     def forward(self, feat, adj, mask):
         h_1 = self.layers[0](feat, adj)
-        h_1g = torch.sum(h_1, 1)
+        h_1g = torch.sum(h_1, 1)#btbt 这里的sum其实是一种readout,把graph中所有node embedding相加,得到该graph的embedding
         for idx in range(self.num_layers - 1):
             h_1 = self.layers[idx + 1](h_1, adj)
-            h_1g = torch.cat((h_1g, torch.sum(h_1, 1)), -1)
-        return h_1, h_1g
+            h_1g = torch.cat((h_1g, torch.sum(h_1, 1)), -1)#btbt 该操作把不同层GCN得到的graph embedding拼在一起,以增强对多跳的表现力
+        return h_1, h_1g#btbt h_1是某图的所有node embedding, h_1g是对应的graph embedding
 
 
 class MLP(nn.Module):
@@ -80,8 +80,8 @@ class Model(nn.Module):
         self.gnn2 = GCN(n_in, n_h, num_layers)
 
     def forward(self, adj, diff, feat, mask):
-        lv1, gv1 = self.gnn1(feat, adj, mask)
-        lv2, gv2 = self.gnn2(feat, diff, mask)
+        lv1, gv1 = self.gnn1(feat, adj, mask)#btbt 处理正常的全adj图
+        lv2, gv2 = self.gnn2(feat, diff, mask)#btbt 处理子的diffusion图
 
         lv1 = self.mlp1(lv1)
         lv2 = self.mlp1(lv2)
@@ -168,8 +168,8 @@ def get_negative_expectation(q_samples, measure, average=True):
 def local_global_loss_(l_enc, g_enc, batch, measure, mask):
     '''
     Args:
-        l: Local feature map.
-        g: Global features.
+        l_enc: #btbt 包含每graph各自的node的embedding. 形状(graph_num*max_nodes_in_graphs, embed_siz)
+        g_enc: #btbt 包含graph embedding, 形状(graph_num, embed_siz)
         measure: Type of f-divergence. For use with mode `fd`
         mode: Loss mode. Fenchel-dual `fd`, NCE `nce`, or Donsker-Vadadhan `dv`.
     Returns:
@@ -183,19 +183,19 @@ def local_global_loss_(l_enc, g_enc, batch, measure, mask):
     neg_mask = torch.ones((num_nodes, num_graphs)).cuda()
     msk = torch.ones((num_nodes, num_graphs)).cuda()
     for nodeidx, graphidx in enumerate(batch):
-        pos_mask[nodeidx][graphidx] = 1.
-        neg_mask[nodeidx][graphidx] = 0.
+        pos_mask[nodeidx][graphidx] = 1.  #btbt 最终使得pos_mask中某node所对应的graph为1,不对应的graph为0
+        neg_mask[nodeidx][graphidx] = 0.  #btbt 最终使得neg_mask中某node所对应的graph为0,不对应的graph为1
 
-    for idx, m in enumerate(mask):
+    for idx, m in enumerate(mask):#btbt mask保存的是每个graph的真实node数目,最终会使得msk中某graph对应的范围内([idx*max_nodes:idx*max_nodes+max_nodes])中,只有该graph的真实节点数m内的节点为1,其它非真实节点为0
         msk[idx * max_nodes + m: idx * max_nodes + max_nodes, idx] = 0.
+    #btbt torch.mm(l_enc, g_enc.t())相当于把每个graph的每个node embed(含为0的假节点)与每个graph embed点乘,得到node与graph的互信息(相关度)
+    res = torch.mm(l_enc, g_enc.t()) * msk #btbt 这里乘以msk(见上面对msk的解释)就是把前面相关度计算中,涉及到假节点(msk中为0,做padding用的节点)的相关计算结果给过滤掉
 
-    res = torch.mm(l_enc, g_enc.t()) * msk
-
-    E_pos = get_positive_expectation(res * pos_mask, measure, average=False).sum()
+    E_pos = get_positive_expectation(res * pos_mask, measure, average=False).sum()#btbt 这里乘pos_mask(见上面对pos_mask的解释)是把负样本相关的计算结果过滤掉,从而得到正样本相关的计算结果
     E_pos = E_pos / num_nodes
-    E_neg = get_negative_expectation(res * neg_mask, measure, average=False).sum()
+    E_neg = get_negative_expectation(res * neg_mask, measure, average=False).sum()#btbt 这里乘pos_mask(见上面对neg_mask的解释)是把正样本相关的计算结果过滤掉,从而得到负样本相关的计算结果
     E_neg = E_neg / (num_nodes * (num_graphs - 1))
-    return E_neg - E_pos
+    return E_neg - E_pos #btbt 其实整个计算过程与../node/train.py中的差不多,只是因为这里是处理多grtaph,每个graph的node数目不同,因此增加了对padding node(假节点)的相关处理
 
 
 def global_global_loss_(g1_enc, g2_enc, measure):
@@ -233,7 +233,7 @@ def train(dataset, gpu, num_layer=4, epoch=40, batch=64):
     l2_coef = 0.0
     hid_units = 512
 
-    adj, diff, feat, labels, num_nodes = load(dataset)
+    adj, diff, feat, labels, num_nodes = load(dataset)#btbt IMDB-MULTI是一个graph分类的数据集,里面有很多graph,每个graph的节点数目不同, 这里是把adj, diff, feat等矩阵中的节点数归一到最大节点graph的节点数,没有的节点为0, 而num_nodes保存了每张graph的实际节点数
 
     feat = torch.FloatTensor(feat).cuda()
     diff = torch.FloatTensor(diff).cuda()
@@ -265,8 +265,8 @@ def train(dataset, gpu, num_layer=4, epoch=40, batch=64):
             mask = num_nodes[idx: idx + batch_size]
 
             lv1, gv1, lv2, gv2 = model(adj[batch], diff[batch], feat[batch], mask)
-
-            lv1 = lv1.view(batch.shape[0] * max_nodes, -1)
+            # btbt lv是某图的所有node embedding, gv是对应的graph embedding, _1表示由正常的adj图得到, _2表示由子diffusion图得到
+            lv1 = lv1.view(batch.shape[0] * max_nodes, -1)#btbt 把保存了node embedding的lv从(graph_num, max_nodes_in_graphs, embed_siz)拉平成(graph_num*max_nodes_in_graphs, embed_siz)
             lv2 = lv2.view(batch.shape[0] * max_nodes, -1)
 
             batch = torch.LongTensor(np.repeat(np.arange(batch.shape[0]), max_nodes)).cuda()

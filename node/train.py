@@ -70,19 +70,19 @@ class Discriminator(nn.Module):
 
     def forward(self, c1, c2, h1, h2, h3, h4, s_bias1=None, s_bias2=None):
         c_x1 = torch.unsqueeze(c1, 1)
-        c_x1 = c_x1.expand_as(h1).contiguous()
+        c_x1 = c_x1.expand_as(h1).contiguous() #btbt c1是graph embedding, h1是该graph对应的node的embedding, 这里把graph embedding 复制成node embedding的shape, 以便计算时与node embedding一一对应见论文的公式5和Algrithm 1
         c_x2 = torch.unsqueeze(c2, 1)
         c_x2 = c_x2.expand_as(h2).contiguous()
 
         # positive
-        sc_1 = torch.squeeze(self.f_k(h2, c_x1), 2)
-        sc_2 = torch.squeeze(self.f_k(h1, c_x2), 2)
+        sc_1 = torch.squeeze(self.f_k(h2, c_x1), 2)#btbt 计算正样本的bilinear,sc_1和sc_2越大越好,结合loss func,这里是使它们趋近1
+        sc_2 = torch.squeeze(self.f_k(h1, c_x2), 2)#btbt 正样本也就是该node embedding与node所属的graph embedding,这里相当于计算其互信息(或相似度或来自同一张图的程度)
 
         # negetive
-        sc_3 = torch.squeeze(self.f_k(h4, c_x1), 2)
+        sc_3 = torch.squeeze(self.f_k(h4, c_x1), 2)#btbt 计算负样本的bilinear,sc_3和sc_4越小越好,结合loss func,这里是使它们趋近0
         sc_4 = torch.squeeze(self.f_k(h3, c_x2), 2)
 
-        logits = torch.cat((sc_1, sc_2, sc_3, sc_4), 1)
+        logits = torch.cat((sc_1, sc_2, sc_3, sc_4), 1)#btbt logits的前一半是正样本, 这里label为1, 后一半是负样本, label为0
         return logits
 
 
@@ -98,8 +98,8 @@ class Model(nn.Module):
         self.disc = Discriminator(n_h)
 
     def forward(self, seq1, seq2, adj, diff, sparse, msk, samp_bias1, samp_bias2):
-        h_1 = self.gcn1(seq1, adj, sparse)
-        c_1 = self.read(h_1, msk)
+        h_1 = self.gcn1(seq1, adj, sparse)  #btbt gcn只是对node进行embedding
+        c_1 = self.read(h_1, msk)  #btbt  readout对graph进行embedding
         c_1 = self.sigm(c_1)
 
         h_2 = self.gcn2(seq1, diff, sparse)
@@ -162,8 +162,8 @@ def train(dataset, verbose=False):
     idx_train = torch.LongTensor(idx_train)
     idx_test = torch.LongTensor(idx_test)
 
-    lbl_1 = torch.ones(batch_size, sample_size * 2)
-    lbl_2 = torch.zeros(batch_size, sample_size * 2)
+    lbl_1 = torch.ones(batch_size, sample_size * 2)#btbt 正样本的label是1, 见Discriminator.forward()中的注释
+    lbl_2 = torch.zeros(batch_size, sample_size * 2)#btbt 负样本的label是0, 见Discriminator.forward()中的注释
     lbl = torch.cat((lbl_1, lbl_2), 1)
 
     model = Model(ft_size, hid_units)
@@ -202,9 +202,9 @@ def train(dataset, verbose=False):
             ba = torch.FloatTensor(ba)
             bd = torch.FloatTensor(bd)
 
-        bf = torch.FloatTensor(bf)
-        idx = np.random.permutation(sample_size)
-        shuf_fts = bf[:, idx, :]
+        bf = torch.FloatTensor(bf) # batch_siz * sample_siz(of node) * sample_siz(of node)
+        idx = np.random.permutation(sample_size) #btbt 这里对之前抽出来的bf样本进行打乱,与bf一一对应作为对比学习的负样本
+        shuf_fts = bf[:, idx, :]  #btbt shuf_fts与bf一一对应作为对比学习的负样本
 
         if torch.cuda.is_available():
             bf = bf.cuda()
@@ -264,7 +264,7 @@ def train(dataset, verbose=False):
     wd = 0.01 if dataset == 'citeseer' else 0.0
 
     for _ in range(50):
-        log = LogReg(hid_units, nb_classes)
+        log = LogReg(hid_units, nb_classes)#btbt 这里是用另一个模型,基于上面得到的embedding进行测试
         opt = torch.optim.Adam(log.parameters(), lr=1e-2, weight_decay=wd)
         log.cuda()
         for _ in range(300):
